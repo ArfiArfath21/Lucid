@@ -5,9 +5,10 @@ Lucid is an iOS app designed to ensure you truly wake up by requiring you to ans
 <img src="Lucid/Assets.xcassets/AppIcon.appiconset/1024.png" alt="Lucid Logo" height="225">
 
 ## App Screenshots
-<img src="screenshots/AlarmsView.PNG" alt="Lucid Home View" height="450">
-
-<img src="screenshots/AddAlarmView.PNG" alt="Lucid Add Alarm View" height="450">
+<div style="display: flex;">
+    <img src="screenshots/AlarmsView.PNG" alt="Lucid Home View" height="450">
+    <img src="screenshots/AddAlarmView.PNG" alt="Lucid Add Alarm View" height="450">
+</div>
 
 ## Features
 
