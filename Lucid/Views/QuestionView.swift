@@ -7,6 +7,7 @@
 
 import Foundation
 import SwiftUI
+import AVFoundation
 
 struct QuestionView: View {
     @ObservedObject var viewModel: AlarmViewModel
@@ -14,6 +15,9 @@ struct QuestionView: View {
     @State private var selectedMCQAnswer: String?
     @State private var isButtonDisabled = false
     @State private var isLoading = false
+    @State private var keepDeviceAwake = true
+    @State private var keepAwakeTimer: Timer? = nil
+    @State private var pulseAnimation = false
     @FocusState private var isInputFocused: Bool
     
     var body: some View {
@@ -22,12 +26,12 @@ struct QuestionView: View {
             Color.black.opacity(0.9)
                 .edgesIgnoringSafeArea(.all)
             
-            VStack(spacing: 20) { // Reduced spacing from 30 to 20
+            VStack(spacing: 20) {
                 // Current time with added padding to avoid the notch
                 Text(currentTimeString)
                     .font(.system(size: 60, weight: .medium, design: .rounded))
                     .foregroundColor(.white)
-                    .padding(.top, 40) // Added top padding to move down from notch
+                    .padding(.top, 40)
                 
                 // Pulsating circle animation
                 Circle()
@@ -46,10 +50,14 @@ struct QuestionView: View {
                     )
                     .onAppear {
                         pulseAnimation = true
+                        startKeepAwakeTimer()
+                    }
+                    .onDisappear {
+                        stopKeepAwakeTimer()
                     }
                 
                 // Reduced spacing instead of a full Spacer
-                Spacer().frame(height: 20) // Fixed height instead of flexible Spacer
+                Spacer().frame(height: 20)
                 
                 // Question display
                 if isLoading {
@@ -90,7 +98,7 @@ struct QuestionView: View {
                                 .toolbar {
                                     ToolbarItemGroup(placement: .keyboard) {
                                         if isNumericKeyboard(question.questionType) {
-                                            Spacer() // Pushes the done button to the right
+                                            Spacer()
                                             Button("Done") {
                                                 isInputFocused = false
                                                 submitAnswer()
@@ -105,7 +113,7 @@ struct QuestionView: View {
                     }
                 }
                 
-                Spacer() // Keep this spacer to push content to the top
+                Spacer()
                 
                 VStack(spacing: 15) {
                     // Submit button
@@ -161,11 +169,70 @@ struct QuestionView: View {
             if let question = viewModel.currentQuestion, question.format == .openEnded {
                 isInputFocused = true
             }
+            
+            // Ensure device doesn't go to sleep
+            DispatchQueue.main.async {
+                UIApplication.shared.isIdleTimerDisabled = true
+            }
+            
+            // Ensure audio session is active
+            try? AVAudioSession.sharedInstance().setActive(true)
+        }
+        .onDisappear {
+            // Allow device to sleep again
+            DispatchQueue.main.async {
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
+            
+            // Stop playing periodic sound to keep app alive
+            stopKeepAwakeTimer()
         }
     }
     
+    // MARK: - Keep Device Awake Methods
+    
+    private func startKeepAwakeTimer() {
+        // Create a timer that plays a silent sound every few seconds to keep the app active
+        stopKeepAwakeTimer()
+        
+        keepAwakeTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { _ in
+            if keepDeviceAwake {
+                // Try to re-activate audio session
+                try? AVAudioSession.sharedInstance().setActive(true)
+                
+                // Play a silent sound if no sound is playing
+                if !isAudioPlaying() {
+                    playKeepAwakeSound()
+                }
+                
+                // Make sure device doesn't sleep
+                DispatchQueue.main.async {
+                    UIApplication.shared.isIdleTimerDisabled = true
+                }
+            }
+        }
+        
+        if let timer = keepAwakeTimer {
+            RunLoop.current.add(timer, forMode: .common)
+        }
+    }
+    
+    private func stopKeepAwakeTimer() {
+        keepAwakeTimer?.invalidate()
+        keepAwakeTimer = nil
+    }
+    
+    private func isAudioPlaying() -> Bool {
+        // Check if audio is currently playing
+        return AVAudioSession.sharedInstance().isOtherAudioPlaying
+    }
+    
+    private func playKeepAwakeSound() {
+        // Play a silent/subtle sound to keep the app alive
+        AudioServicesPlaySystemSound(1104) // Very quiet system sound
+    }
+    
     // MARK: - Computed Properties
-    @State private var pulseAnimation = false
     
     private var currentTimeString: String {
         let formatter = DateFormatter()
@@ -251,10 +318,10 @@ struct QuestionView: View {
     }
 }
 
+// Updated Preview that doesn't have initializer issues
 struct QuestionView_Previews: PreviewProvider {
     static var previews: some View {
-        let viewModel = AlarmViewModel()
-        QuestionView(viewModel: viewModel)
+        QuestionView(viewModel: AlarmViewModel())
             .preferredColorScheme(.dark)
     }
 }

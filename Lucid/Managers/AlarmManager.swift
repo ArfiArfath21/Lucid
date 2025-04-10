@@ -8,6 +8,7 @@
 import Foundation
 import UserNotifications
 import SwiftUI
+import AVFoundation
 
 class AlarmManager: ObservableObject {
     @Published var alarms: [Alarm] = []
@@ -18,6 +19,7 @@ class AlarmManager: ObservableObject {
     // Make SoundManager public so ViewModel can access it
     let soundManager = SoundManager()
     private let questionGenerator = QuestionGenerator()
+    private let foregroundHelper = ForegroundHelper.shared
     
     private let userDefaultsKey = "LucidAlarmSavedAlarms"
     
@@ -25,11 +27,24 @@ class AlarmManager: ObservableObject {
         loadAlarms()
         setupNotificationHandling()
         
+        // Make ourselves available to AppDelegate
+        if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
+            appDelegate.alarmManager = self
+        }
+        
         // Listen for app becoming active to check for pending alarms
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(appBecameActive),
             name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+        
+        // Listen for app going to background
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
             object: nil
         )
     }
@@ -43,7 +58,15 @@ class AlarmManager: ObservableObject {
         checkPendingAlarms()
     }
     
-    private func checkPendingAlarms() {
+    @objc private func appDidEnterBackground() {
+        // If we have an active alarm, make sure we keep playing in background
+        if isAlarmActive {
+            // Wake up the device and try to bring our app to the foreground
+            foregroundHelper.bringAppToForeground()
+        }
+    }
+    
+    func checkPendingAlarms() {
         // Get current date/time
         let now = Date()
         
@@ -140,14 +163,14 @@ class AlarmManager: ObservableObject {
         let alarmCopy = alarm
         
         // Request notification permission if needed
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, error in
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge, .criticalAlert]) { [weak self] granted, error in
             if granted {
                 DispatchQueue.main.async {
                     guard let self = self else { return }
                     self.scheduleNotification(for: alarmCopy)
                 }
             } else {
-                print("Notification permission denied")
+                print("Notification permission denied: \(String(describing: error))")
             }
         }
     }
@@ -156,9 +179,15 @@ class AlarmManager: ObservableObject {
         let content = UNMutableNotificationContent()
         content.title = "Lucid Alarm"
         content.body = "Time to wake up! Answer a question to dismiss."
-        content.sound = UNNotificationSound.default
+        
+        // Configure the content for critical alerts using our utility
+        NotificationUtils.configureCriticalAlert(content: content)
+        
         content.userInfo = ["alarmId": alarm.id.uuidString]
         content.categoryIdentifier = "ALARM_CATEGORY"
+        
+        // Use critical alerts
+        content.interruptionLevel = .critical
         
         // Create calendar components from alarm time
         let components = Calendar.current.dateComponents([.hour, .minute], from: alarm.time)
@@ -225,9 +254,10 @@ class AlarmManager: ObservableObject {
         let content = UNMutableNotificationContent()
         content.title = "Lucid Alarm"
         content.body = "Time to wake up! Answer a question to dismiss."
-        content.sound = UNNotificationSound.default
+        content.sound = UNNotificationSound.defaultCritical
         content.userInfo = ["alarmId": alarm.id.uuidString]
         content.categoryIdentifier = "ALARM_CATEGORY"
+        content.interruptionLevel = .critical
         
         for weekday in weekdays {
             // Create date components with the specified weekday
@@ -358,6 +388,9 @@ class AlarmManager: ObservableObject {
     func activateAlarm(alarm: Alarm) async {
         // Only activate if not already active
         if !isAlarmActive {
+            // Ensure the app is in foreground by using ForegroundHelper
+            foregroundHelper.bringAppToForeground()
+            
             // Play the alarm sound first (don't wait for question generation)
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
@@ -385,6 +418,9 @@ class AlarmManager: ObservableObject {
         
         // Stop the alarm sound
         soundManager.stopAlarmSound()
+        
+        // Release foreground state
+        foregroundHelper.releaseAlarmState()
         
         print("Alarm deactivated")
     }
