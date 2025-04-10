@@ -2,11 +2,12 @@
 
 Lucid is an iOS app designed to ensure you truly wake up by requiring you to answer questions correctly before disabling the alarm. Perfect for heavy sleepers or those who tend to snooze their alarms without fully waking up.
 
-![Lucid App Screenshot](Lucid/Assets.xcassets/AppIcon.appiconset/1024.png)
+<img src="Lucid/Assets.xcassets/AppIcon.appiconset/1024.png" alt="Lucid Logo" height="225">
 
 ## App Screenshots
-![Lucid Alarms View](screenshots/AlarmsView.PNG)
-![Lucid Alarms View](screenshots/AddAlarmView.PNG)
+<img src="screenshots/AlarmsView.PNG" alt="Lucid Home View" height="450">
+
+<img src="screenshots/AddAlarmView.PNG" alt="Lucid Add Alarm View" height="450">
 
 ## Features
 
