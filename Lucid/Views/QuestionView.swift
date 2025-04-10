@@ -22,11 +22,12 @@ struct QuestionView: View {
             Color.black.opacity(0.9)
                 .edgesIgnoringSafeArea(.all)
             
-            VStack(spacing: 30) {
-                // Current time
+            VStack(spacing: 20) { // Reduced spacing from 30 to 20
+                // Current time with added padding to avoid the notch
                 Text(currentTimeString)
                     .font(.system(size: 60, weight: .medium, design: .rounded))
                     .foregroundColor(.white)
+                    .padding(.top, 40) // Added top padding to move down from notch
                 
                 // Pulsating circle animation
                 Circle()
@@ -47,7 +48,8 @@ struct QuestionView: View {
                         pulseAnimation = true
                     }
                 
-                Spacer()
+                // Reduced spacing instead of a full Spacer
+                Spacer().frame(height: 20) // Fixed height instead of flexible Spacer
                 
                 // Question display
                 if isLoading {
@@ -84,12 +86,26 @@ struct QuestionView: View {
                                 .onSubmit {
                                     submitAnswer()
                                 }
+                                // Add toolbar with Done button for numeric keyboards
+                                .toolbar {
+                                    ToolbarItemGroup(placement: .keyboard) {
+                                        if isNumericKeyboard(question.questionType) {
+                                            Spacer() // Pushes the done button to the right
+                                            Button("Done") {
+                                                isInputFocused = false
+                                                submitAnswer()
+                                            }
+                                            .font(.headline)
+                                            .foregroundColor(.blue)
+                                        }
+                                    }
+                                }
                         }
                         .padding(.horizontal, 30)
                     }
                 }
                 
-                Spacer()
+                Spacer() // Keep this spacer to push content to the top
                 
                 VStack(spacing: 15) {
                     // Submit button
@@ -171,6 +187,11 @@ struct QuestionView: View {
     // MARK: - Methods
     private func submitAnswer() {
         if let question = viewModel.currentQuestion {
+            // If input is empty, don't submit
+            if question.format == .openEnded && userAnswer.isEmpty {
+                return
+            }
+            
             // Disable button temporarily to prevent multiple submissions
             isButtonDisabled = true
             isLoading = true
@@ -213,6 +234,11 @@ struct QuestionView: View {
         case .readingComprehension:
             return .default
         }
+    }
+    
+    private func isNumericKeyboard(_ type: QuestionType) -> Bool {
+        let keyboard = keyboardTypeForQuestionType(type)
+        return keyboard == .decimalPad || keyboard == .numberPad
     }
     
     private func autocapitalizationForQuestionType(_ type: QuestionType) -> UITextAutocapitalizationType {
