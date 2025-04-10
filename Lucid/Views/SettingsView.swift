@@ -11,12 +11,105 @@ import SwiftUI
 struct SettingsView: View {
     @AppStorage("defaultQuestionTypes") private var defaultQuestionTypesData: Data = Data()
     @AppStorage("defaultHasOverride") private var defaultHasOverride: Bool = false
+    @AppStorage("preferMultipleChoice") private var preferMultipleChoice: Bool = false
+    @AppStorage("useAIValidation") private var useAIValidation: Bool = true
     
     @State private var selectedQuestionTypes: [QuestionType] = QuestionType.allCases
     @State private var showResetConfirmation = false
+    @State private var showApiKeySheet = false
+    @State private var hasApiKey = false
+    @State private var currentProvider: APIProvider = .openAI
+    @State private var connectionStatus: ConnectionStatus = .unknown
+    @State private var isCheckingConnection = false
+    
+    enum ConnectionStatus {
+        case unknown
+        case connected
+        case failed(String)
+        
+        var color: Color {
+            switch self {
+            case .unknown:
+                return .gray
+            case .connected:
+                return .green
+            case .failed:
+                return .red
+            }
+        }
+        
+        var icon: String {
+            switch self {
+            case .unknown:
+                return "questionmark.circle.fill"
+            case .connected:
+                return "checkmark.circle.fill"
+            case .failed:
+                return "xmark.circle.fill"
+            }
+        }
+        
+        var description: String {
+            switch self {
+            case .unknown:
+                return "Unknown"
+            case .connected:
+                return "Connected"
+            case .failed(let error):
+                return "Failed: \(error)"
+            }
+        }
+    }
     
     var body: some View {
         Form {
+            Section(header: Text("AI Features")) {
+                HStack {
+                    if currentProvider == .openAI {
+                        Text("OpenAI API")
+                    } else {
+                        Text("Azure OpenAI API")
+                    }
+                    Spacer()
+                    if isCheckingConnection {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle())
+                            .scaleEffect(0.8)
+                    } else if hasApiKey {
+                        Image(systemName: connectionStatus.icon)
+                            .foregroundColor(connectionStatus.color)
+                    }
+                    Button(action: {
+                        showApiKeySheet = true
+                    }) {
+                        Text(hasApiKey ? "Configured" : "Configure")
+                            .foregroundColor(hasApiKey ? .blue : .blue)
+                    }
+                }
+                
+                if case .failed(let errorMessage) = connectionStatus {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundColor(.red)
+                        .padding(.top, 4)
+                }
+                
+                Toggle("Use AI Answer Validation", isOn: $useAIValidation)
+                    .onChange(of: useAIValidation) { oldValue, newValue in
+                        if newValue && !hasApiKey {
+                            // Prompt to set API key if not already set
+                            showApiKeySheet = true
+                        }
+                    }
+                
+                Toggle("Prefer Multiple-Choice Questions", isOn: $preferMultipleChoice)
+                
+                Button("Test Connection") {
+                    checkAPIConnection()
+                }
+                .disabled(!hasApiKey || isCheckingConnection)
+            }
+            
             Section(header: Text("Default Question Types")) {
                 ForEach(QuestionType.allCases) { questionType in
                     Toggle(questionType.rawValue, isOn: Binding(
@@ -45,7 +138,7 @@ struct SettingsView: View {
                 HStack {
                     Text("Version")
                     Spacer()
-                    Text("1.0.0")
+                    Text("1.1.1")
                         .foregroundColor(.secondary)
                 }
                 
@@ -84,6 +177,12 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .onAppear {
             loadDefaultQuestionTypes()
+            checkApiKeyAndProvider()
+            
+            // Check connection status when view appears
+            if hasApiKey {
+                checkAPIConnection()
+            }
         }
         .alert(isPresented: $showResetConfirmation) {
             Alert(
@@ -94,6 +193,76 @@ struct SettingsView: View {
                 },
                 secondaryButton: .cancel()
             )
+        }
+        .sheet(isPresented: $showApiKeySheet, onDismiss: {
+            // Check API key status again after sheet is dismissed
+            checkApiKeyAndProvider()
+            
+            // Check connection if API key is available
+            if hasApiKey {
+                checkAPIConnection()
+            }
+        }) {
+            APIKeySetupView(isPresented: $showApiKeySheet)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("APIKeyChanged"))) { _ in
+            checkApiKeyAndProvider()
+            
+            // Check connection if API key is available
+            if hasApiKey {
+                checkAPIConnection()
+            }
+        }
+    }
+    
+    private func checkApiKeyAndProvider() {
+        hasApiKey = KeyManager.hasAPIKey()
+        currentProvider = KeyManager.getAPIProvider()
+        
+        // If AI validation is enabled but no API key, disable it
+        if useAIValidation && !hasApiKey {
+            useAIValidation = false
+        }
+    }
+    
+    private func checkAPIConnection() {
+        guard hasApiKey, let apiKey = KeyManager.getAPIKey() else {
+            connectionStatus = .failed("No API key configured")
+            return
+        }
+        
+        isCheckingConnection = true
+        connectionStatus = .unknown
+        
+        let service: OpenAIService
+        
+        if currentProvider == .openAI {
+            let baseUrl = KeyManager.getBaseURL()
+            service = OpenAIService(apiKey: apiKey, provider: .openAI, baseUrl: baseUrl)
+        } else {
+            service = OpenAIService(
+                apiKey: apiKey,
+                provider: .azureOpenAI,
+                azureResourceName: KeyManager.getAzureResourceName(),
+                azureDeploymentId: KeyManager.getAzureDeploymentId(),
+                azureApiVersion: KeyManager.getAzureApiVersion()
+            )
+        }
+        
+        Task {
+            let result = await service.testConnection()
+            
+            // Switch back to the main thread
+            DispatchQueue.main.async {
+                isCheckingConnection = false
+                
+                switch result {
+                case .success:
+                    connectionStatus = .connected
+                case .failure(let error):
+                    connectionStatus = .failed(error.localizedDescription)
+                }
+            }
         }
     }
     
@@ -115,6 +284,8 @@ struct SettingsView: View {
     private func resetToDefaults() {
         selectedQuestionTypes = QuestionType.allCases
         defaultHasOverride = false
+        preferMultipleChoice = false
+        useAIValidation = true
         saveDefaultQuestionTypes()
     }
 }

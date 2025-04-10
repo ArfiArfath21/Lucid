@@ -23,10 +23,12 @@ class AlarmViewModel: ObservableObject {
     @Published var isAnswerCorrect: Bool = false
     @Published var sampleQuestion: Question?
     @Published var nextAlarmTime: Date?
+    @Published var isCheckingAnswer: Bool = false
     
     // UI state properties
     @Published var showingAddAlarm: Bool = false
     @Published var editingAlarm: Alarm?
+    @Published var showApiKeySettings: Bool = false
     
     // Cancellables for subscriptions
     private var cancellables = Set<AnyCancellable>()
@@ -80,18 +82,30 @@ class AlarmViewModel: ObservableObject {
         updateNextAlarmTime()
     }
     
-    func checkAnswer() {
-        let isCorrect = alarmManager.checkAlarmAnswer(userAnswer: userAnswer)
+    func checkAnswer() async {
+        guard !userAnswer.isEmpty else { return }
         
-        isAnswerCorrect = isCorrect
-        showAnswerResult = true
+        // Store local copy to avoid capture issues
+        let answer = userAnswer
         
-        // Reset user answer
-        userAnswer = ""
+        isCheckingAnswer = true
         
-        // Hide answer result after a delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-            self.showAnswerResult = false
+        let isCorrect = await alarmManager.checkAlarmAnswer(userAnswer: answer)
+        
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.isAnswerCorrect = isCorrect
+            self.showAnswerResult = true
+            self.isCheckingAnswer = false
+            
+            // Reset user answer
+            self.userAnswer = ""
+            
+            // Hide answer result after a delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                guard let self = self else { return }
+                self.showAnswerResult = false
+            }
         }
     }
     

@@ -27,7 +27,7 @@ class AlarmManager: ObservableObject {
         
         // Listen for app becoming active to check for pending alarms
         NotificationCenter.default.addObserver(
-            self, 
+            self,
             selector: #selector(appBecameActive),
             name: UIApplication.didBecomeActiveNotification,
             object: nil
@@ -53,8 +53,12 @@ class AlarmManager: ObservableObject {
                 // If the next occurrence is within 60 seconds of now, trigger it
                 let difference = nextOccurrence.timeIntervalSince(now)
                 if difference <= 60 && difference >= -60 {
-                    // Activate this alarm
-                    activateAlarm(alarm: alarm)
+                    // Activate this alarm - use a local copy to avoid capture warnings
+                    let alarmCopy = alarm
+                    Task { [weak self] in
+                        guard let self = self else { return }
+                        await self.activateAlarm(alarm: alarmCopy)
+                    }
                     break
                 }
             }
@@ -130,12 +134,17 @@ class AlarmManager: ObservableObject {
         }
     }
     
+    // MARK: - Alarm Scheduling Methods
     func scheduleAlarm(alarm: Alarm) {
+        // Create a local copy to avoid capture warnings
+        let alarmCopy = alarm
+        
         // Request notification permission if needed
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, error in
             if granted {
                 DispatchQueue.main.async {
-                    self.scheduleNotification(for: alarm)
+                    guard let self = self else { return }
+                    self.scheduleNotification(for: alarmCopy)
                 }
             } else {
                 print("Notification permission denied")
@@ -196,6 +205,7 @@ class AlarmManager: ObservableObject {
         }
     }
     
+    // The following scheduling methods remain unchanged from the original implementation
     private func scheduleWeekdayAlarms(alarm: Alarm, components: DateComponents) {
         let weekdays = [2, 3, 4, 5, 6] // Monday = 2, ..., Friday = 6
         scheduleAlarmsForDays(alarm: alarm, components: components, weekdays: weekdays)
@@ -345,17 +355,26 @@ class AlarmManager: ObservableObject {
     
     // MARK: - Alarm Activation Methods
     
-    func activateAlarm(alarm: Alarm) {
+    func activateAlarm(alarm: Alarm) async {
         // Only activate if not already active
         if !isAlarmActive {
-            activeAlarm = alarm
-            currentQuestion = questionGenerator.generateRandomQuestion(from: alarm.questionTypes)
-            isAlarmActive = true
+            // Play the alarm sound first (don't wait for question generation)
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.activeAlarm = alarm
+                self.isAlarmActive = true
+                self.soundManager.playAlarmSound(sound: alarm.sound)
+                print("Alarm activated: \(alarm.time)")
+            }
             
-            // Play the alarm sound
-            soundManager.playAlarmSound(sound: alarm.sound)
+            // Generate a question asynchronously
+            let question = await questionGenerator.generateRandomQuestion(from: alarm.questionTypes)
             
-            print("Alarm activated: \(alarm.time)")
+            // Update the UI on the main thread
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.currentQuestion = question
+            }
         }
     }
     
@@ -370,16 +389,29 @@ class AlarmManager: ObservableObject {
         print("Alarm deactivated")
     }
     
-    func checkAlarmAnswer(userAnswer: String) -> Bool {
+    func checkAlarmAnswer(userAnswer: String) async -> Bool {
         guard let question = currentQuestion else { return false }
         
-        let isCorrect = questionGenerator.checkAnswer(question: question, userAnswer: userAnswer)
+        // Store reference to active alarm to avoid capture issues
+        let currentActiveAlarm = activeAlarm
+        let questionTypes = currentActiveAlarm?.questionTypes ?? [.simpleMath]
+        
+        // Use OpenAI to validate the answer
+        let isCorrect = await questionGenerator.checkAnswer(question: question, userAnswer: userAnswer)
         
         if isCorrect {
-            deactivateAlarm()
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.deactivateAlarm()
+            }
         } else {
             // Generate a new question
-            currentQuestion = questionGenerator.generateRandomQuestion(from: activeAlarm?.questionTypes ?? [.simpleMath])
+            let newQuestion = await questionGenerator.generateRandomQuestion(from: questionTypes)
+            
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.currentQuestion = newQuestion
+            }
         }
         
         return isCorrect
@@ -419,9 +451,11 @@ class AlarmManager: ObservableObject {
            let alarmId = UUID(uuidString: alarmIdString),
            let alarm = alarms.first(where: { $0.id == alarmId }) {
             
-            // Activate the alarm
-            DispatchQueue.main.async {
-                self.activateAlarm(alarm: alarm)
+            // Activate the alarm - store a local copy to avoid capture warnings
+            let alarmCopy = alarm
+            Task { [weak self] in
+                guard let self = self else { return }
+                await self.activateAlarm(alarm: alarmCopy)
             }
         }
     }
@@ -429,52 +463,5 @@ class AlarmManager: ObservableObject {
     // Generate a sample question for the main screen
     func generateSampleQuestion() -> Question {
         return questionGenerator.generateSampleQuestion()
-    }
-}
-
-// App delegate to handle notifications when app is in background
-class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
-    func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
-        // Set up notification delegate
-        UNUserNotificationCenter.current().delegate = self
-        
-        // Request notification permissions when app launches
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
-            if !granted {
-                print("Notification permission denied")
-            }
-        }
-        
-        return true
-    }
-    
-    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        let userInfo = response.notification.request.content.userInfo
-        
-        // Post notification to be handled by AlarmManager
-        NotificationCenter.default.post(
-            name: Notification.Name("AlarmFired"),
-            object: nil,
-            userInfo: userInfo
-        )
-        
-        completionHandler()
-    }
-    
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        // Allow notification to show when app is in foreground
-        if #available(iOS 14.0, *) {
-            completionHandler([.banner, .sound, .list])
-        } else {
-            completionHandler([.alert, .sound])
-        }
-        
-        // Also trigger the alarm directly
-        let userInfo = notification.request.content.userInfo
-        NotificationCenter.default.post(
-            name: Notification.Name("AlarmFired"),
-            object: nil,
-            userInfo: userInfo
-        )
     }
 }

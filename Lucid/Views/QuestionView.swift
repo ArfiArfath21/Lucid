@@ -11,7 +11,9 @@ import SwiftUI
 struct QuestionView: View {
     @ObservedObject var viewModel: AlarmViewModel
     @State private var userAnswer = ""
+    @State private var selectedMCQAnswer: String?
     @State private var isButtonDisabled = false
+    @State private var isLoading = false
     @FocusState private var isInputFocused: Bool
     
     var body: some View {
@@ -48,33 +50,43 @@ struct QuestionView: View {
                 Spacer()
                 
                 // Question display
-                if let question = viewModel.currentQuestion {
-                    VStack(spacing: 24) {
-                        Text(question.questionText)
-                            .font(.title2)
-                            .fontWeight(.medium)
-                            .multilineTextAlignment(.center)
-                            .foregroundColor(.white)
-                            .padding(.horizontal)
-                        
-                        // Answer input field
-                        TextField("Answer", text: $userAnswer)
-                            .font(.title3)
-                            .padding()
-                            .background(Color.white.opacity(0.2))
-                            .cornerRadius(10)
-                            .foregroundColor(.white)
-                            .multilineTextAlignment(.center)
-                            .keyboardType(keyboardTypeForQuestionType(question.questionType))
-                            .autocapitalization(autocapitalizationForQuestionType(question.questionType))
-                            .disableAutocorrection(true)
-                            .focused($isInputFocused)
-                            .submitLabel(.done)
-                            .onSubmit {
-                                submitAnswer()
-                            }
+                if isLoading {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(1.5)
+                } else if let question = viewModel.currentQuestion {
+                    if question.format == .multipleChoice {
+                        // Multiple choice view
+                        MCQQuestionView(question: question, selectedOption: $selectedMCQAnswer)
+                    } else {
+                        // Open-ended question view
+                        VStack(spacing: 24) {
+                            Text(question.questionText)
+                                .font(.title2)
+                                .fontWeight(.medium)
+                                .multilineTextAlignment(.center)
+                                .foregroundColor(.white)
+                                .padding(.horizontal)
+                            
+                            // Answer input field
+                            TextField("Answer", text: $userAnswer)
+                                .font(.title3)
+                                .padding()
+                                .background(Color.white.opacity(0.2))
+                                .cornerRadius(10)
+                                .foregroundColor(.white)
+                                .multilineTextAlignment(.center)
+                                .keyboardType(keyboardTypeForQuestionType(question.questionType))
+                                .autocapitalization(autocapitalizationForQuestionType(question.questionType))
+                                .disableAutocorrection(true)
+                                .focused($isInputFocused)
+                                .submitLabel(.done)
+                                .onSubmit {
+                                    submitAnswer()
+                                }
+                        }
+                        .padding(.horizontal, 30)
                     }
-                    .padding(.horizontal, 30)
                 }
                 
                 Spacer()
@@ -90,8 +102,8 @@ struct QuestionView: View {
                             .background(Color.white)
                             .cornerRadius(10)
                     }
-                    .disabled(userAnswer.isEmpty || isButtonDisabled)
-                    .opacity(userAnswer.isEmpty || isButtonDisabled ? 0.6 : 1.0)
+                    .disabled(isSubmitButtonDisabled || isButtonDisabled)
+                    .opacity(isSubmitButtonDisabled || isButtonDisabled ? 0.6 : 1.0)
                     
                     // Override button (if enabled)
                     if viewModel.activeAlarm?.hasOverride == true {
@@ -130,10 +142,13 @@ struct QuestionView: View {
             }
         }
         .onAppear {
-            isInputFocused = true
+            if let question = viewModel.currentQuestion, question.format == .openEnded {
+                isInputFocused = true
+            }
         }
     }
     
+    // MARK: - Computed Properties
     @State private var pulseAnimation = false
     
     private var currentTimeString: String {
@@ -142,23 +157,50 @@ struct QuestionView: View {
         return formatter.string(from: Date())
     }
     
+    private var isSubmitButtonDisabled: Bool {
+        if let question = viewModel.currentQuestion {
+            if question.format == .openEnded {
+                return userAnswer.isEmpty
+            } else {
+                return selectedMCQAnswer == nil
+            }
+        }
+        return true
+    }
+    
+    // MARK: - Methods
     private func submitAnswer() {
-        guard !userAnswer.isEmpty else { return }
-        
-        // Disable button temporarily to prevent multiple submissions
-        isButtonDisabled = true
-        
-        // Check answer
-        viewModel.userAnswer = userAnswer
-        viewModel.checkAnswer()
-        
-        // Reset answer field
-        userAnswer = ""
-        
-        // Re-enable button after a delay
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            isButtonDisabled = false
-            isInputFocused = true
+        if let question = viewModel.currentQuestion {
+            // Disable button temporarily to prevent multiple submissions
+            isButtonDisabled = true
+            isLoading = true
+            
+            // Set the appropriate answer based on question type
+            if question.format == .openEnded {
+                viewModel.userAnswer = userAnswer
+            } else {
+                viewModel.userAnswer = selectedMCQAnswer ?? ""
+            }
+            
+            // Check answer (async)
+            Task {
+                await viewModel.checkAnswer()
+                
+                // Reset UI state
+                DispatchQueue.main.async {
+                    isLoading = false
+                    userAnswer = ""
+                    selectedMCQAnswer = nil
+                    
+                    // Re-enable button after a delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        isButtonDisabled = false
+                        if let question = viewModel.currentQuestion, question.format == .openEnded {
+                            isInputFocused = true
+                        }
+                    }
+                }
+            }
         }
     }
     

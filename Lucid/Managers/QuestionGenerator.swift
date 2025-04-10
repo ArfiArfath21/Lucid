@@ -6,9 +6,10 @@
 //
 
 import Foundation
+import SwiftUI
 
 class QuestionGenerator {
-    // Simple Math with a Twist questions
+    // Simple Math with a Twist questions (fallback questions)
     private let mathQuestions: [Question] = [
         Question(questionText: "What is (37 × 4) - 23 + 18?", correctAnswer: "143", questionType: .simpleMath),
         Question(questionText: "Calculate: 125 ÷ 5 × 3 - 17", correctAnswer: "58", questionType: .simpleMath),
@@ -44,8 +45,49 @@ class QuestionGenerator {
         Question(questionText: "If you read 15 pages every day, how many pages will you read in two weeks?", correctAnswer: "210", questionType: .verbalMath)
     ]
     
-    // Get a random question from all question types
-    func generateRandomQuestion(from types: [QuestionType]) -> Question {
+    // OpenAI service for generating questions
+    private var openAIService: OpenAIService?
+    
+    // User preferences
+    private var preferMultipleChoice: Bool {
+        return UserDefaults.standard.bool(forKey: "preferMultipleChoice")
+    }
+    
+    private var useAIValidation: Bool {
+        return UserDefaults.standard.bool(forKey: "useAIValidation")
+    }
+    
+    // MARK: - Initialization and Configuration
+    init() {
+        configureOpenAI()
+        
+        // Listen for API key changes
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(apiKeyChanged),
+            name: Notification.Name("APIKeyChanged"),
+            object: nil
+        )
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+    
+    @objc private func apiKeyChanged() {
+        configureOpenAI()
+    }
+    
+    func configureOpenAI() {
+        if let apiKey = KeyManager.getAPIKey() {
+            self.openAIService = OpenAIService(apiKey: apiKey)
+        } else {
+            self.openAIService = nil
+        }
+    }
+    
+    // MARK: - Question Generation Methods
+    func generateRandomQuestion(from types: [QuestionType]) async -> Question {
         // If no types are specified, return a default question
         guard !types.isEmpty else {
             return Question(
@@ -58,36 +100,130 @@ class QuestionGenerator {
         // Select a random question type from the provided types
         let randomType = types.randomElement()!
         
-        switch randomType {
-        case .simpleMath:
-            return generateMathQuestion()
-        case .wordScramble:
-            return generateWordScrambleQuestion()
-        case .readingComprehension:
-            return generateReadingComprehensionQuestion()
-        case .verbalMath:
-            return generateVerbalMathQuestion()
+        // Get appropriate question format based on user preference
+        let format: QuestionFormat = preferMultipleChoice ? .multipleChoice : .openEnded
+        
+        // Try to generate a question using OpenAI if available and enabled
+        if useAIValidation, let openAIService = openAIService {
+            do {
+                var question = try await openAIService.generateQuestion(type: randomType, format: format)
+                // Set the question type (the API response doesn't include this)
+                question = Question(
+                    questionText: question.questionText,
+                    correctAnswer: question.correctAnswer,
+                    questionType: randomType,
+                    format: question.format,
+                    mcqOptions: question.mcqOptions
+                )
+                return question
+            } catch {
+                print("Error generating question with OpenAI: \(error)")
+                // Fall back to hardcoded questions
+            }
         }
+        
+        // Fallback to hardcoded questions
+        return fallbackQuestion(for: randomType)
     }
     
-    func generateMathQuestion() -> Question {
-        return mathQuestions.randomElement()!
-    }
-    
-    func generateWordScrambleQuestion() -> Question {
-        return wordScrambleQuestions.randomElement()!
-    }
-    
-    func generateReadingComprehensionQuestion() -> Question {
-        return readingComprehensionQuestions.randomElement()!
-    }
-    
-    func generateVerbalMathQuestion() -> Question {
-        return verbalMathQuestions.randomElement()!
-    }
-    
-    func checkAnswer(question: Question, userAnswer: String) -> Bool {
+    // MARK: - Answer Validation
+    func checkAnswer(question: Question, userAnswer: String) async -> Bool {
+        // For MCQ questions, the validation is straightforward
+        if question.format == .multipleChoice {
+            return question.isCorrect(userAnswer: userAnswer)
+        }
+        
+        // For open-ended questions, try to use AI validation if enabled
+        if useAIValidation, let openAIService = openAIService {
+            do {
+                return try await openAIService.validateAnswer(question: question, userAnswer: userAnswer)
+            } catch {
+                print("Error validating answer with OpenAI: \(error)")
+                // Fall back to basic validation
+            }
+        }
+        
+        // Fallback to basic string comparison
         return question.isCorrect(userAnswer: userAnswer)
+    }
+    
+    // MARK: - Helper Methods
+    private func fallbackQuestion(for type: QuestionType) -> Question {
+        // Select a hardcoded question of the appropriate type
+        let question: Question
+        
+        switch type {
+        case .simpleMath:
+            question = mathQuestions.randomElement()!
+        case .wordScramble:
+            question = wordScrambleQuestions.randomElement()!
+        case .readingComprehension:
+            question = readingComprehensionQuestions.randomElement()!
+        case .verbalMath:
+            question = verbalMathQuestions.randomElement()!
+        }
+        
+        // If multiple choice is preferred, convert to an MCQ
+        if preferMultipleChoice {
+            return convertToMCQ(question)
+        }
+        
+        return question
+    }
+    
+    private func convertToMCQ(_ question: Question) -> Question {
+        // Create a multiple-choice version of a standard question
+        // This is a simplified implementation - in a real app, you'd want to generate
+        // more plausible but incorrect answers based on the question type
+        
+        let correctAnswer = question.correctAnswer
+        
+        // Generate some basic incorrect options based on question type
+        var incorrectOptions: [String] = []
+        
+        switch question.questionType {
+        case .simpleMath, .verbalMath:
+            // For math questions, use close numbers
+            if let correctNum = Int(correctAnswer.filter { $0.isNumber }) {
+                incorrectOptions.append("\(correctNum + 1)")
+                incorrectOptions.append("\(correctNum - 1)")
+                incorrectOptions.append("\(correctNum * 2)")
+            } else {
+                incorrectOptions = ["25", "42", "100"]
+            }
+            
+        case .wordScramble:
+            // For word scrambles, use other words
+            incorrectOptions = ["BANANA", "ORANGE", "LAPTOP"]
+            
+        case .readingComprehension:
+            // For reading comprehension, use plausible but wrong answers
+            incorrectOptions = ["$6.75", "70", "3"]
+        }
+        
+        // Ensure we have 3 incorrect options
+        while incorrectOptions.count < 3 {
+            incorrectOptions.append("Option \(incorrectOptions.count + 1)")
+        }
+        
+        // Trim to 3 options if we have more
+        incorrectOptions = Array(incorrectOptions.prefix(3))
+        
+        // Create MCQ options including the correct one
+        let options = [
+            MCQOption(text: correctAnswer, isCorrect: true),
+            MCQOption(text: incorrectOptions[0], isCorrect: false),
+            MCQOption(text: incorrectOptions[1], isCorrect: false),
+            MCQOption(text: incorrectOptions[2], isCorrect: false),
+        ].shuffled() // Randomize order
+        
+        return Question(
+            questionText: question.questionText,
+            correctAnswer: correctAnswer,
+            questionType: question.questionType,
+            format: .multipleChoice,
+            mcqOptions: options
+        )
     }
     
     // Generate a sample question for preview or testing
@@ -99,6 +235,13 @@ class QuestionGenerator {
             verbalMathQuestions[0]
         ]
         
-        return sampleQuestions.randomElement()!
+        let question = sampleQuestions.randomElement()!
+        
+        // If multiple choice is preferred, convert to MCQ
+        if preferMultipleChoice {
+            return convertToMCQ(question)
+        }
+        
+        return question
     }
 }
